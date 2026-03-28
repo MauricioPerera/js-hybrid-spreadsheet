@@ -190,24 +190,61 @@ class IDBAdapter {
   async persist(){const tx=this._db.transaction('data','readwrite'),st=tx.objectStore('data');for(const[k,v]of this._cache)st.put(v,k);await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j})}
 }
 
-// ── Formula Engine ────────────────────────────────────
+// ── Formula Engine (cross-sheet + VLOOKUP) ────────────
 function colIdx(letter){return letter.charCodeAt(0)-65}
 function colLetter(i){return String.fromCharCode(65+i)}
 function parseRef(ref){const m=ref.match(/^([A-Z]+)(\d+)$/);return m?{col:colIdx(m[1]),row:parseInt(m[2])-1}:null}
 
+/** Find sheet index by name (case-insensitive) */
+function findSheet(name){
+  const n=name.toLowerCase().replace(/['"]/g,'');
+  return sheets.findIndex(s=>s.name.toLowerCase()===n);
+}
+
+/** Parse a ref that may include sheet: "Hoja2!A1" or just "A1" */
+function parseFullRef(ref){
+  if(ref.includes('!')){
+    const[sheetName,cellRef]=ref.split('!');
+    const si=findSheet(sheetName);
+    return {sheetIdx:si>=0?si:activeSheet, cellKey:cellRef};
+  }
+  return {sheetIdx:activeSheet, cellKey:ref};
+}
+
 function expandRange(rangeStr){
-  const[a,b]=rangeStr.split(':');
+  // Handle cross-sheet range: Hoja2!A1:B10
+  let sheetIdx=activeSheet;
+  let range=rangeStr;
+  if(rangeStr.includes('!')){
+    const[sheetName,rest]=rangeStr.split('!');
+    const si=findSheet(sheetName);
+    if(si>=0)sheetIdx=si;
+    range=rest;
+  }
+  const[a,b]=range.split(':');
   const start=parseRef(a),end=parseRef(b);
   if(!start||!end)return[];
   const cells=[];
   for(let r=Math.min(start.row,end.row);r<=Math.max(start.row,end.row);r++)
     for(let c=Math.min(start.col,end.col);c<=Math.max(start.col,end.col);c++)
-      cells.push(colLetter(c)+(r+1));
+      cells.push({sheetIdx, key:colLetter(c)+(r+1)});
   return cells;
 }
 
-function getCellValue(key){
-  const d=sheets[activeSheet]?.data[key];
+function getCellValue(keyOrFull,sheetIdx){
+  const si=sheetIdx!==undefined?sheetIdx:activeSheet;
+  let key=keyOrFull;
+  // Handle cross-sheet ref
+  if(typeof keyOrFull==='string'&&keyOrFull.includes('!')){
+    const p=parseFullRef(keyOrFull);
+    key=p.cellKey;
+    return getCellValueFromSheet(p.sheetIdx,key);
+  }
+  return getCellValueFromSheet(si,key);
+}
+
+function getCellValueFromSheet(si,key){
+  const d=sheets[si]?.data[key];
   if(!d)return 0;
   const v=d.computed!==undefined?d.computed:d.value;
   const n=parseFloat(v);
@@ -215,33 +252,133 @@ function getCellValue(key){
 }
 
 function getValues(arg){
-  if(arg.includes(':'))return expandRange(arg).map(getCellValue).filter(v=>typeof v==='number');
-  const v=getCellValue(arg);
+  if(arg.includes(':')){
+    const cells=expandRange(arg);
+    return cells.map(c=>getCellValueFromSheet(c.sheetIdx,c.key)).filter(v=>typeof v==='number');
+  }
+  const p=parseFullRef(arg);
+  const v=getCellValueFromSheet(p.sheetIdx,p.cellKey);
   return typeof v==='number'?[v]:[];
 }
 
-function evalFormula(formula){
+function evalFormula(formula,sheetIdx){
+  const evalSheet=sheetIdx!==undefined?sheetIdx:activeSheet;
   try{
     let f=formula.slice(1).trim();
-    // Functions
+
+    // VLOOKUP(searchValue, range, colIndex, [exactMatch])
+    f=f.replace(/VLOOKUP\(([^,]+),([^,]+),(\d+)(?:,([^)]*))?\)/gi,(_,searchVal,range,colIdxStr)=>{
+      let search=searchVal.trim();
+      // Resolve search value if it's a cell ref
+      if(/^[A-Z]+\d+$/.test(search)||search.includes('!'))search=getCellValue(search,evalSheet);
+      else{try{search=JSON.parse(search)}catch{}}
+
+      const cells=expandRange(range.trim());
+      if(!cells.length)return '#ERR';
+      const ci=parseInt(colIdxStr)-1;
+
+      // Group cells by row
+      const rows=new Map();
+      for(const c of cells){
+        const r=parseRef(c.key);
+        if(!r)continue;
+        if(!rows.has(r.row))rows.set(r.row,[]);
+        rows.get(r.row).push(c);
+      }
+
+      // Search first column for match
+      for(const[,rowCells]of rows){
+        rowCells.sort((a,b)=>parseRef(a.key).col-parseRef(b.key).col);
+        const firstVal=getCellValueFromSheet(rowCells[0].sheetIdx,rowCells[0].key);
+        if(firstVal==search||String(firstVal)===String(search)){
+          if(ci<rowCells.length)return getCellValueFromSheet(rowCells[ci].sheetIdx,rowCells[ci].key);
+          return '#REF';
+        }
+      }
+      return '#N/A';
+    });
+
+    // HLOOKUP(searchValue, range, rowIndex)
+    f=f.replace(/HLOOKUP\(([^,]+),([^,]+),(\d+)\)/gi,(_,searchVal,range,rowIdxStr)=>{
+      let search=searchVal.trim();
+      if(/^[A-Z]+\d+$/.test(search)||search.includes('!'))search=getCellValue(search,evalSheet);
+      else{try{search=JSON.parse(search)}catch{}}
+
+      const cells=expandRange(range.trim());
+      const ri=parseInt(rowIdxStr)-1;
+      const cols=new Map();
+      for(const c of cells){
+        const r=parseRef(c.key);
+        if(!r)continue;
+        if(!cols.has(r.col))cols.set(r.col,[]);
+        cols.get(r.col).push(c);
+      }
+      for(const[,colCells]of cols){
+        colCells.sort((a,b)=>parseRef(a.key).row-parseRef(b.key).row);
+        const firstVal=getCellValueFromSheet(colCells[0].sheetIdx,colCells[0].key);
+        if(firstVal==search||String(firstVal)===String(search)){
+          if(ri<colCells.length)return getCellValueFromSheet(colCells[ri].sheetIdx,colCells[ri].key);
+          return '#REF';
+        }
+      }
+      return '#N/A';
+    });
+
+    // Standard functions
     f=f.replace(/SUM\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.reduce((s,v)=>s+v,0)});
     f=f.replace(/(AVG|AVERAGE)\(([^)]+)\)/gi,(_,__,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length?vals.reduce((s,v)=>s+v,0)/vals.length:0});
     f=f.replace(/COUNT\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length});
     f=f.replace(/MIN\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length?Math.min(...vals):0});
     f=f.replace(/MAX\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length?Math.max(...vals):0});
-    f=f.replace(/IF\(([^,]+),([^,]+),([^)]+)\)/gi,(_,cond,t,fl)=>{try{return Function('"use strict";return('+cond.replace(/([A-Z]+\d+)/g,(m)=>JSON.stringify(getCellValue(m)))+')')()? eval(t.trim()):eval(fl.trim())}catch{return '#ERR'}});
-    f=f.replace(/CONCAT\(([^)]+)\)/gi,(_,args)=>args.split(',').map(a=>{a=a.trim();const r=parseRef(a);return r?String(getCellValue(a)):a.replace(/^["']|["']$/g,'')}).join(''));
-    // Cell references
-    f=f.replace(/([A-Z]+\d+)/g,(m)=>{const v=getCellValue(m);return typeof v==='number'?v:JSON.stringify(v)});
+    f=f.replace(/COUNTIF\(([^,]+),([^)]+)\)/gi,(_,range,cond)=>{
+      const vals=expandRange(range.trim()).map(c=>getCellValueFromSheet(c.sheetIdx,c.key));
+      let crit=cond.trim().replace(/^["']|["']$/g,'');
+      const op=crit.match(/^([><=!]+)(.*)/);
+      if(op){const threshold=parseFloat(op[2]);return vals.filter(v=>{const n=parseFloat(v);switch(op[1]){case'>':return n>threshold;case'>=':return n>=threshold;case'<':return n<threshold;case'<=':return n<=threshold;case'<>':case'!=':return n!==threshold;default:return n===threshold}}).length}
+      return vals.filter(v=>String(v)===crit).length;
+    });
+    f=f.replace(/SUMIF\(([^,]+),([^,]+)(?:,([^)]+))?\)/gi,(_,range,cond,sumRange)=>{
+      const checkCells=expandRange(range.trim());
+      const sumCells=sumRange?expandRange(sumRange.trim()):checkCells;
+      let crit=cond.trim().replace(/^["']|["']$/g,'');
+      const op=crit.match(/^([><=!]+)(.*)/);
+      let total=0;
+      for(let i=0;i<checkCells.length;i++){
+        const cv=getCellValueFromSheet(checkCells[i].sheetIdx,checkCells[i].key);
+        let match=false;
+        if(op){const n=parseFloat(cv),th=parseFloat(op[2]);switch(op[1]){case'>':match=n>th;break;case'>=':match=n>=th;break;case'<':match=n<th;break;case'<=':match=n<=th;break;default:match=n===th}}
+        else match=String(cv)===crit;
+        if(match&&i<sumCells.length){const sv=getCellValueFromSheet(sumCells[i].sheetIdx,sumCells[i].key);if(typeof sv==='number')total+=sv;else{const n=parseFloat(sv);if(!isNaN(n))total+=n}}
+      }
+      return total;
+    });
+    f=f.replace(/IF\(([^,]+),([^,]+),([^)]+)\)/gi,(_,cond,t,fl)=>{
+      try{
+        const resolved=cond.replace(/(?:[\w\s]+!)?[A-Z]+\d+/g,m=>JSON.stringify(getCellValue(m,evalSheet)));
+        return Function('"use strict";return('+resolved+')')()? eval(t.trim()):eval(fl.trim());
+      }catch{return '#ERR'}
+    });
+    f=f.replace(/CONCAT\(([^)]+)\)/gi,(_,args)=>args.split(',').map(a=>{a=a.trim();if(/^(?:[\w\s]+!)?[A-Z]+\d+$/.test(a))return String(getCellValue(a,evalSheet));return a.replace(/^["']|["']$/g,'')}).join(''));
+
+    // Cell references (including cross-sheet: Hoja2!A1)
+    f=f.replace(/([\w\s]+![A-Z]+\d+)/g,m=>{const v=getCellValue(m,evalSheet);return typeof v==='number'?v:JSON.stringify(v)});
+    f=f.replace(/([A-Z]+\d+)/g,m=>{const v=getCellValueFromSheet(evalSheet,m);return typeof v==='number'?v:JSON.stringify(v)});
+
     return Function('"use strict";return('+f+')')();
   }catch(e){return '#ERR'}
 }
 
+/** Recalculate ALL sheets (cross-sheet deps) */
 function recalcAll(){
-  const data=sheets[activeSheet]?.data;
-  if(!data)return;
-  for(const[key,cell]of Object.entries(data)){
-    if(cell.formula) cell.computed=evalFormula(cell.formula);
+  // Two passes: first pass resolves within-sheet, second resolves cross-sheet
+  for(let pass=0;pass<2;pass++){
+    for(let si=0;si<sheets.length;si++){
+      const data=sheets[si]?.data;
+      if(!data)continue;
+      for(const[key,cell]of Object.entries(data)){
+        if(cell.formula) cell.computed=evalFormula(cell.formula,si);
+      }
+    }
   }
 }
 
@@ -276,9 +413,9 @@ async function init(){
 }
 
 async function persistAll(){
-  // Save current sheet data
-  const s=sheets[activeSheet];
-  if(s._id)sheetsCol.update({_id:s._id},{$set:{data:s.data,name:s.name}});
+  for(const s of sheets){
+    if(s._id)sheetsCol.update({_id:s._id},{$set:{data:s.data,name:s.name}});
+  }
   db.flush();
   await adapter.persist();
 }
