@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hybrid Spreadsheet — Offline AI Spreadsheet</title>
+<meta name="description" content="Free offline spreadsheet with local AI (Qwen3), formulas, hybrid search, CSV import/export. Runs 100% in your browser.">
+<meta name="author" content="Mauricio Perera">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://hybrid-spreadsheet.pages.dev/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Hybrid Spreadsheet — Offline AI Spreadsheet">
+<meta property="og:description" content="Spreadsheet with local AI, formulas, hybrid search. 100% offline in your browser.">
+<meta property="og:url" content="https://hybrid-spreadsheet.pages.dev/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Hybrid Spreadsheet — Offline AI Spreadsheet">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication","name":"Hybrid Spreadsheet","description":"Offline AI spreadsheet with formulas, hybrid search, CSV import/export.","url":"https://hybrid-spreadsheet.pages.dev/","applicationCategory":"ProductivityApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Mauricio Perera","url":"https://www.linkedin.com/in/mauricioperera/"},"isAccessibleForFree":true}
+</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0a;--surface:#141414;--surface2:#1a1a1a;--border:#2a2a2a;--text:#e0e0e0;--muted:#888;--accent:#3b82f6;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--orange:#f97316}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+
+.header{padding:6px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;background:var(--surface);flex-wrap:wrap}
+.header h1{font-size:14px;font-weight:600;flex-shrink:0}
+.model-badge{font-size:9px;padding:2px 6px;border-radius:8px;white-space:nowrap}
+.model-badge.loading{background:#1a1a00;color:var(--yellow)}
+.model-badge.ready{background:#0a1a0a;color:var(--green)}
+.model-badge.error{background:#1a0a0a;color:var(--red)}
+.hdr-stats{margin-left:auto;font-size:10px;color:var(--muted)}
+.progress-bar{height:2px;background:var(--border);border-radius:2px;overflow:hidden;width:80px}
+.progress-fill{height:100%;background:var(--accent);transition:width .3s}
+
+.toolbar{padding:4px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;background:var(--surface)}
+.toolbar .cell-ref{width:60px;padding:3px 6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--accent);font-size:11px;font-weight:600;text-align:center}
+.toolbar .formula-input{flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:'SF Mono',Consolas,monospace}
+.toolbar .formula-input:focus{outline:none;border-color:var(--accent)}
+.btn{padding:4px 8px;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;font-size:10px}
+.btn:hover{opacity:.9}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted)}
+.btn-outline:hover{border-color:var(--muted);color:var(--text)}
+.btn-ai{background:var(--orange)}
+
+.app{flex:1;display:flex;overflow:hidden}
+.grid-container{flex:1;overflow:auto;position:relative}
+table.grid{border-collapse:collapse;min-width:100%}
+.grid th,.grid td{border:1px solid var(--border);padding:0;position:relative}
+.grid th{background:var(--surface);color:var(--muted);font-size:10px;font-weight:500;padding:4px 8px;position:sticky;user-select:none}
+.grid thead th{top:0;z-index:2}
+.grid .row-hdr{position:sticky;left:0;z-index:1;width:40px;min-width:40px;text-align:center;background:var(--surface)}
+.grid .col-hdr{min-width:100px;cursor:pointer}
+.grid .col-hdr:hover{background:var(--surface2)}
+.grid .corner{position:sticky;left:0;top:0;z-index:3;background:var(--surface)}
+.grid td{height:26px;min-width:100px;max-width:300px;font-size:12px;cursor:cell}
+.grid td .cell-display{padding:2px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;height:100%;display:flex;align-items:center}
+.grid td .cell-display.num{justify-content:flex-end;color:var(--accent)}
+.grid td .cell-display.formula{color:var(--green)}
+.grid td .cell-display.err{color:var(--red)}
+.grid td.selected{outline:2px solid var(--accent);outline-offset:-1px;z-index:1}
+.grid td.in-range{background:rgba(59,130,246,.1)}
+.grid td .cell-edit{width:100%;height:100%;border:none;background:var(--bg);color:var(--text);font-size:12px;padding:2px 6px;font-family:inherit;outline:none}
+
+.sheet-bar{display:flex;align-items:center;gap:4px;padding:4px 10px;border-top:1px solid var(--border);background:var(--surface);overflow-x:auto}
+.sheet-tab{padding:4px 12px;font-size:10px;border:1px solid var(--border);border-radius:4px 4px 0 0;background:transparent;color:var(--muted);cursor:pointer;white-space:nowrap}
+.sheet-tab.active{background:var(--bg);color:var(--text);border-bottom-color:var(--bg)}
+.sheet-tab:hover:not(.active){color:var(--text)}
+
+.ai-panel{width:300px;border-left:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface)}
+.ai-panel.hidden{display:none}
+.ai-header{padding:6px 10px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.ai-header h3{font-size:11px;color:var(--orange)}
+.ai-actions{padding:6px 10px;display:flex;flex-wrap:wrap;gap:3px;border-bottom:1px solid var(--border)}
+.ai-btn{padding:3px 8px;font-size:10px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--text);cursor:pointer}
+.ai-btn:hover{border-color:var(--orange);color:var(--orange)}
+.ai-output{flex:1;overflow-y:auto;padding:10px;font-size:11px;line-height:1.5;white-space:pre-wrap}
+.ai-output .generating{color:var(--orange)}
+.ai-input{padding:6px;border-top:1px solid var(--border)}
+.ai-input input{width:100%;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px}
+.ai-input input:focus{outline:none;border-color:var(--orange)}
+
+.search-bar{padding:4px 10px;border-bottom:1px solid var(--border);display:none;gap:6px;align-items:center;background:var(--surface)}
+.search-bar.visible{display:flex}
+.search-bar input{flex:1;padding:4px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px}
+.search-bar input:focus{outline:none;border-color:var(--accent)}
+.search-results{font-size:10px;color:var(--muted);white-space:nowrap}
+
+@media(max-width:768px){
+  .ai-panel{position:fixed;inset:0;width:100%;z-index:10;border:none}
+  .ai-panel.hidden{display:none}
+  .grid td{min-width:80px}
+  .toolbar .cell-ref{width:45px}
+  .ai-input input{font-size:16px}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Hybrid Spreadsheet</h1>
+  <div class="model-badge loading" id="embed-status">E5...</div>
+  <div class="progress-bar" id="embed-progress"><div class="progress-fill" id="embed-fill" style="width:0%"></div></div>
+  <div class="model-badge loading" id="llm-status">LLM...</div>
+  <div class="progress-bar" id="llm-progress"><div class="progress-fill" id="llm-fill" style="width:0%"></div></div>
+  <div class="hdr-stats" id="hdr-stats"></div>
+  <a href="https://www.linkedin.com/in/mauricioperera/" target="_blank" rel="noopener" style="font-size:9px;color:var(--muted);text-decoration:none">by MP</a>
+</div>
+
+<div class="toolbar">
+  <input class="cell-ref" id="cell-ref" readonly value="A1" />
+  <input class="formula-input" id="formula-input" placeholder="Valor o formula (=SUM(A1:A10))" onkeydown="if(event.key==='Enter'){commitFormula();event.preventDefault()}" />
+  <button class="btn btn-outline" onclick="toggleSearch()">Buscar</button>
+  <button class="btn btn-outline" onclick="importCSV()">CSV</button>
+  <button class="btn btn-outline" onclick="exportCSV()">Export</button>
+  <button class="btn btn-ai" onclick="toggleAI()">AI</button>
+</div>
+
+<div class="search-bar" id="search-bar">
+  <input type="text" id="search-input" placeholder="Buscar en celdas..." oninput="onSearch()" />
+  <span class="search-results" id="search-results"></span>
+  <button class="btn btn-outline" onclick="toggleSearch()" style="font-size:9px">X</button>
+  <input type="file" id="csv-file" accept=".csv,.tsv,.json" style="display:none" onchange="handleCSVImport(event)" />
+</div>
+
+<div class="app">
+  <div class="grid-container" id="grid-container">
+    <table class="grid" id="grid"></table>
+  </div>
+
+  <div class="ai-panel hidden" id="ai-panel">
+    <div class="ai-header">
+      <h3>Qwen3 0.6B (local)</h3>
+      <button class="btn btn-outline" onclick="toggleAI()" style="font-size:9px">X</button>
+    </div>
+    <div class="ai-actions">
+      <button class="ai-btn" onclick="aiAction('formula')">Sugerir formula</button>
+      <button class="ai-btn" onclick="aiAction('analyze')">Analizar datos</button>
+      <button class="ai-btn" onclick="aiAction('summarize')">Resumir</button>
+      <button class="ai-btn" onclick="aiAction('fill')">Auto-completar</button>
+    </div>
+    <div class="ai-output" id="ai-output"><span style="color:var(--muted)">Selecciona una accion o escribe una pregunta.</span></div>
+    <div class="ai-input">
+      <input type="text" id="ai-question" placeholder="Pregunta sobre los datos..." onkeydown="if(event.key==='Enter')aiAsk()" />
+    </div>
+  </div>
+</div>
+
+<div class="sheet-bar">
+  <button class="btn btn-outline" onclick="addSheet()" style="font-size:9px">+</button>
+  <div id="sheet-tabs"></div>
+</div>
+
+<script src="js-vector-store.js"></script>
+<script src="js-doc-store.js"></script>
+
+<script>
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+
+<script type="module">
+import { pipeline, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+
+// ── State ─────────────────────────────────────────────
+let embedder = null, generator = null;
+let db, sheetsCol, vecStore, bm25, hybrid;
+const COLS = 26, VISIBLE_ROWS = 50, DIM = 384;
+let sheets = []; // [{ name, data: {[cellKey]: {value,formula}} }]
+let activeSheet = 0, selectedCell = null, selectedRange = null;
+let aiGenerating = false;
+
+// ── IDBAdapter ────────────────────────────────────────
+class IDBAdapter {
+  constructor(n='hybrid-spreadsheet'){this.dbName=n;this._cache=new Map();this._db=null}
+  async init(){
+    this._db=await new Promise((r,j)=>{const q=indexedDB.open(this.dbName,1);q.onupgradeneeded=()=>q.result.createObjectStore('data');q.onsuccess=()=>r(q.result);q.onerror=()=>j(q.error)});
+    const tx=this._db.transaction('data','readonly'),st=tx.objectStore('data');
+    const[ks,vs]=await Promise.all([new Promise(r=>{const q=st.getAllKeys();q.onsuccess=()=>r(q.result)}),new Promise(r=>{const q=st.getAll();q.onsuccess=()=>r(q.result)})]);
+    for(let i=0;i<ks.length;i++)this._cache.set(ks[i],vs[i]);
+  }
+  readJson(k){return this._cache.get('json:'+k)??null}
+  writeJson(k,v){this._cache.set('json:'+k,v)}
+  readBin(k){return this._cache.get('bin:'+k)??null}
+  writeBin(k,v){this._cache.set('bin:'+k,v)}
+  delete(k){this._cache.delete('json:'+k);this._cache.delete('bin:'+k)}
+  async persist(){const tx=this._db.transaction('data','readwrite'),st=tx.objectStore('data');for(const[k,v]of this._cache)st.put(v,k);await new Promise((r,j)=>{tx.oncomplete=r;tx.onerror=j})}
+}
+
+// ── Formula Engine ────────────────────────────────────
+function colIdx(letter){return letter.charCodeAt(0)-65}
+function colLetter(i){return String.fromCharCode(65+i)}
+function parseRef(ref){const m=ref.match(/^([A-Z]+)(\d+)$/);return m?{col:colIdx(m[1]),row:parseInt(m[2])-1}:null}
+
+function expandRange(rangeStr){
+  const[a,b]=rangeStr.split(':');
+  const start=parseRef(a),end=parseRef(b);
+  if(!start||!end)return[];
+  const cells=[];
+  for(let r=Math.min(start.row,end.row);r<=Math.max(start.row,end.row);r++)
+    for(let c=Math.min(start.col,end.col);c<=Math.max(start.col,end.col);c++)
+      cells.push(colLetter(c)+(r+1));
+  return cells;
+}
+
+function getCellValue(key){
+  const d=sheets[activeSheet]?.data[key];
+  if(!d)return 0;
+  const v=d.computed!==undefined?d.computed:d.value;
+  const n=parseFloat(v);
+  return isNaN(n)?v:n;
+}
+
+function getValues(arg){
+  if(arg.includes(':'))return expandRange(arg).map(getCellValue).filter(v=>typeof v==='number');
+  const v=getCellValue(arg);
+  return typeof v==='number'?[v]:[];
+}
+
+function evalFormula(formula){
+  try{
+    let f=formula.slice(1).trim();
+    // Functions
+    f=f.replace(/SUM\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.reduce((s,v)=>s+v,0)});
+    f=f.replace(/(AVG|AVERAGE)\(([^)]+)\)/gi,(_,__,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length?vals.reduce((s,v)=>s+v,0)/vals.length:0});
+    f=f.replace(/COUNT\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length});
+    f=f.replace(/MIN\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length?Math.min(...vals):0});
+    f=f.replace(/MAX\(([^)]+)\)/gi,(_,args)=>{const vals=args.split(',').flatMap(a=>getValues(a.trim()));return vals.length?Math.max(...vals):0});
+    f=f.replace(/IF\(([^,]+),([^,]+),([^)]+)\)/gi,(_,cond,t,fl)=>{try{return Function('"use strict";return('+cond.replace(/([A-Z]+\d+)/g,(m)=>JSON.stringify(getCellValue(m)))+')')()? eval(t.trim()):eval(fl.trim())}catch{return '#ERR'}});
+    f=f.replace(/CONCAT\(([^)]+)\)/gi,(_,args)=>args.split(',').map(a=>{a=a.trim();const r=parseRef(a);return r?String(getCellValue(a)):a.replace(/^["']|["']$/g,'')}).join(''));
+    // Cell references
+    f=f.replace(/([A-Z]+\d+)/g,(m)=>{const v=getCellValue(m);return typeof v==='number'?v:JSON.stringify(v)});
+    return Function('"use strict";return('+f+')')();
+  }catch(e){return '#ERR'}
+}
+
+function recalcAll(){
+  const data=sheets[activeSheet]?.data;
+  if(!data)return;
+  for(const[key,cell]of Object.entries(data)){
+    if(cell.formula) cell.computed=evalFormula(cell.formula);
+  }
+}
+
+// ── Init ──────────────────────────────────────────────
+const adapter=new IDBAdapter();
+
+async function init(){
+  try{await adapter.init()}catch(e){document.getElementById('hdr-stats').textContent='Error: IndexedDB';return}
+
+  db=new DocStore(adapter);
+  sheetsCol=db.collection('sheets');
+  vecStore=new PolarQuantizedStore(adapter,DIM);
+  bm25=new BM25Index();
+  hybrid=new HybridSearch(vecStore,bm25,'rrf');
+
+  // Load sheets
+  const saved=sheetsCol.find({}).sort({order:1}).toArray();
+  if(saved.length>0){
+    sheets=saved.map(s=>({name:s.name,data:s.data||{},_id:s._id}));
+  }else{
+    const s=sheetsCol.insert({name:'Hoja 1',data:{},order:0});
+    sheets=[{name:'Hoja 1',data:{},_id:s._id}];
+  }
+
+  activeSheet=0;
+  renderGrid();
+  renderSheetTabs();
+  updateStats();
+
+  loadEmbedder();
+  loadLLM();
+}
+
+async function persistAll(){
+  // Save current sheet data
+  const s=sheets[activeSheet];
+  if(s._id)sheetsCol.update({_id:s._id},{$set:{data:s.data,name:s.name}});
+  db.flush();
+  await adapter.persist();
+}
+
+// ── Model Loading ─────────────────────────────────────
+function setStatus(m,s,t){const e=document.getElementById(m+'-status');e.className='model-badge '+s;e.textContent=t}
+
+async function loadEmbedder(){
+  const t0=performance.now();setStatus('embed','loading','E5...');
+  try{
+    embedder=await pipeline('feature-extraction','Xenova/multilingual-e5-small',{progress_callback:p=>{if(p.status==='progress'&&p.total){document.getElementById('embed-fill').style.width=Math.round(p.loaded/p.total*100)+'%'}}});
+    const el=((performance.now()-t0)/1000).toFixed(1);
+    setStatus('embed','ready',`E5 ${parseFloat(el)<10?'(cache)':'ok'} ${el}s`);
+    document.getElementById('embed-progress').style.display='none';
+  }catch(e){setStatus('embed','error','E5 err');console.error(e)}
+}
+
+async function loadLLM(){
+  const t0=performance.now(),dev=navigator.gpu?'webgpu':'wasm',dt=dev==='webgpu'?'q4f16':'q4';
+  setStatus('llm','loading','Qwen3...');
+  try{
+    generator=await pipeline('text-generation','onnx-community/Qwen3-0.6B-ONNX',{device:dev,dtype:dt,progress_callback:p=>{if(p.status==='progress'&&p.total){document.getElementById('llm-fill').style.width=Math.round(p.loaded/p.total*100)+'%'}}});
+    const el=((performance.now()-t0)/1000).toFixed(1);
+    setStatus('llm','ready',`Qwen3 ${parseFloat(el)<15?'(cache)':'ok'} ${el}s ${dev}`);
+    document.getElementById('llm-progress').style.display='none';
+  }catch(e){setStatus('llm','error','LLM err');console.error(e)}
+}
+
+// ── LLM ───────────────────────────────────────────────
+async function generate(prompt,opts={}){
+  if(!generator)throw new Error('LLM no cargado');
+  const out=await generator([{role:'system',content:opts.system||'Eres un asistente de hojas de calculo. Responde conciso.'},{role:'user',content:prompt+'\n/no_think'}],{max_new_tokens:opts.maxTokens||256,do_sample:false});
+  return out[0].generated_text.at(-1).content.replace(/<think>[\s\S]*?<\/think>/g,'').trim();
+}
+
+async function generateStream(prompt,outputEl,opts={}){
+  if(!generator){outputEl.textContent='LLM no cargado...';return}
+  aiGenerating=true;outputEl.innerHTML='<span class="generating">Generando...</span>';
+  let raw='';
+  const streamer=new TextStreamer(generator.tokenizer,{skip_prompt:true,skip_special_tokens:true,callback_function:t=>{raw+=t;outputEl.textContent=raw.replace(/<think>[\s\S]*?<\/think>/g,'').trim();outputEl.scrollTop=outputEl.scrollHeight}});
+  try{await generator([{role:'system',content:opts.system||'Eres un asistente de hojas de calculo. Responde en el idioma del usuario.'},{role:'user',content:prompt+'\n/no_think'}],{max_new_tokens:opts.maxTokens||300,do_sample:false,streamer})}catch(e){outputEl.textContent+='\n[Error: '+e.message+']'}
+  aiGenerating=false;
+  return raw.replace(/<think>[\s\S]*?<\/think>/g,'').trim();
+}
+
+// ── Grid Render ───────────────────────────────────────
+function renderGrid(){
+  const data=sheets[activeSheet]?.data||{};
+  recalcAll();
+
+  // Determine grid size
+  let maxRow=VISIBLE_ROWS,maxCol=COLS;
+  for(const k of Object.keys(data)){
+    const r=parseRef(k);
+    if(r){maxRow=Math.max(maxRow,r.row+2);maxCol=Math.max(maxCol,r.col+1)}
+  }
+
+  let html='<thead><tr><th class="corner"></th>';
+  for(let c=0;c<maxCol;c++) html+=`<th class="col-hdr" data-col="${c}">${colLetter(c)}</th>`;
+  html+='</tr></thead><tbody>';
+
+  for(let r=0;r<maxRow;r++){
+    html+=`<tr><th class="row-hdr">${r+1}</th>`;
+    for(let c=0;c<maxCol;c++){
+      const key=colLetter(c)+(r+1);
+      const cell=data[key];
+      const val=cell?(cell.computed!==undefined?cell.computed:cell.value):'';
+      const isNum=typeof val==='number'||(!isNaN(parseFloat(val))&&val!=='');
+      const isFormula=cell?.formula;
+      const isErr=val==='#ERR';
+      const cls=selectedCell===key?'selected':'';
+      html+=`<td class="${cls}" data-key="${key}" onclick="selectCell('${key}')" ondblclick="editCell('${key}')"><div class="cell-display${isNum?' num':''}${isFormula?' formula':''}${isErr?' err':''}">${esc(String(val??''))}</div></td>`;
+    }
+    html+='</tr>';
+  }
+  html+='</tbody>';
+  document.getElementById('grid').innerHTML=html;
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+// ── Cell Interaction ──────────────────────────────────
+window.selectCell=function(key){
+  selectedCell=key;
+  document.getElementById('cell-ref').value=key;
+  const cell=sheets[activeSheet]?.data[key];
+  document.getElementById('formula-input').value=cell?.formula||cell?.value||'';
+  // Update visual selection
+  document.querySelectorAll('.grid td.selected').forEach(e=>e.classList.remove('selected'));
+  const td=document.querySelector(`[data-key="${key}"]`);
+  if(td)td.classList.add('selected');
+};
+
+window.editCell=function(key){
+  const td=document.querySelector(`[data-key="${key}"]`);
+  if(!td)return;
+  selectedCell=key;
+  const cell=sheets[activeSheet]?.data[key];
+  const val=cell?.formula||cell?.value||'';
+  td.innerHTML=`<input class="cell-edit" value="${esc(String(val))}" onblur="finishEdit('${key}',this.value)" onkeydown="if(event.key==='Enter'){finishEdit('${key}',this.value);event.preventDefault()}else if(event.key==='Escape'){renderGrid()}" autofocus />`;
+  td.querySelector('input').focus();
+  td.querySelector('input').select();
+};
+
+window.finishEdit=function(key,val){
+  if(!sheets[activeSheet])return;
+  val=val.trim();
+  if(val===''){
+    delete sheets[activeSheet].data[key];
+  }else if(val.startsWith('=')){
+    sheets[activeSheet].data[key]={value:val,formula:val,computed:evalFormula(val)};
+  }else{
+    const num=parseFloat(val);
+    sheets[activeSheet].data[key]={value:isNaN(num)?val:num};
+  }
+  recalcAll();
+  renderGrid();
+  selectCell(key);
+  updateStats();
+  persistAll();
+};
+
+window.commitFormula=function(){
+  if(!selectedCell)return;
+  const val=document.getElementById('formula-input').value;
+  finishEdit(selectedCell,val);
+};
+
+// Keyboard navigation
+document.addEventListener('keydown',e=>{
+  if(!selectedCell||document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='TEXTAREA')return;
+  const ref=parseRef(selectedCell);
+  if(!ref)return;
+  let nr=ref.row,nc=ref.col;
+  if(e.key==='ArrowDown')nr++;
+  else if(e.key==='ArrowUp')nr=Math.max(0,nr-1);
+  else if(e.key==='ArrowRight'||e.key==='Tab'){nc=Math.min(COLS-1,nc+1);e.preventDefault()}
+  else if(e.key==='ArrowLeft')nc=Math.max(0,nc-1);
+  else if(e.key==='Enter'){editCell(selectedCell);e.preventDefault();return}
+  else if(e.key==='Delete'||e.key==='Backspace'){finishEdit(selectedCell,'');return}
+  else if(e.key.length===1&&!e.ctrlKey&&!e.metaKey){editCell(selectedCell);return}
+  else return;
+  const nk=colLetter(nc)+(nr+1);
+  selectCell(nk);
+  const td=document.querySelector(`[data-key="${nk}"]`);
+  if(td)td.scrollIntoView({block:'nearest',inline:'nearest'});
+});
+
+// ── Sheet Tabs ────────────────────────────────────────
+function renderSheetTabs(){
+  document.getElementById('sheet-tabs').innerHTML=sheets.map((s,i)=>
+    `<button class="sheet-tab ${i===activeSheet?'active':''}" onclick="switchSheet(${i})" ondblclick="renameSheet(${i})">${esc(s.name)}</button>`
+  ).join('');
+}
+
+window.switchSheet=function(i){
+  persistAll();
+  activeSheet=i;
+  renderGrid();
+  renderSheetTabs();
+  selectedCell=null;
+  document.getElementById('cell-ref').value='';
+  document.getElementById('formula-input').value='';
+};
+
+window.addSheet=function(){
+  const name='Hoja '+(sheets.length+1);
+  const s=sheetsCol.insert({name,data:{},order:sheets.length});
+  sheets.push({name,data:{},_id:s._id});
+  switchSheet(sheets.length-1);
+  persistAll();
+};
+
+window.renameSheet=function(i){
+  const name=prompt('Nombre de la hoja:',sheets[i].name);
+  if(!name||!name.trim())return;
+  sheets[i].name=name.trim();
+  renderSheetTabs();
+  persistAll();
+};
+
+// ── Search ────────────────────────────────────────────
+window.toggleSearch=function(){document.getElementById('search-bar').classList.toggle('visible')};
+
+window.onSearch=function(){
+  const q=document.getElementById('search-input').value.trim().toLowerCase();
+  if(!q){document.getElementById('search-results').textContent='';document.querySelectorAll('.grid td.in-range').forEach(e=>e.classList.remove('in-range'));return}
+  const data=sheets[activeSheet]?.data||{};
+  const matches=[];
+  for(const[key,cell]of Object.entries(data)){
+    const val=String(cell.computed!==undefined?cell.computed:cell.value).toLowerCase();
+    if(val.includes(q))matches.push(key);
+  }
+  document.querySelectorAll('.grid td.in-range').forEach(e=>e.classList.remove('in-range'));
+  matches.forEach(k=>{const td=document.querySelector(`[data-key="${k}"]`);if(td)td.classList.add('in-range')});
+  document.getElementById('search-results').textContent=matches.length+' encontrada'+(matches.length!==1?'s':'');
+  if(matches.length>0)selectCell(matches[0]);
+};
+
+// ── Import/Export CSV ─────────────────────────────────
+window.importCSV=function(){document.getElementById('csv-file').click()};
+
+window.handleCSVImport=function(event){
+  const file=event.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const text=e.target.result;
+    let rows;
+    if(file.name.endsWith('.json')){
+      try{const j=JSON.parse(text);if(Array.isArray(j)){rows=j.map(r=>Object.values(r).map(String))}else return}catch{return}
+    }else{
+      const sep=text.includes('\t')?'\t':',';
+      rows=text.split('\n').map(r=>r.split(sep).map(c=>c.replace(/^"|"$/g,'').trim()));
+    }
+    const data={};
+    rows.forEach((row,ri)=>{
+      row.forEach((val,ci)=>{
+        if(ci<COLS&&val){const num=parseFloat(val);data[colLetter(ci)+(ri+1)]={value:isNaN(num)?val:num}}
+      });
+    });
+    sheets[activeSheet].data=data;
+    recalcAll();renderGrid();updateStats();persistAll();
+  };
+  reader.readAsText(file);
+  event.target.value='';
+};
+
+window.exportCSV=function(){
+  const data=sheets[activeSheet]?.data||{};
+  let maxR=0,maxC=0;
+  for(const k of Object.keys(data)){const r=parseRef(k);if(r){maxR=Math.max(maxR,r.row);maxC=Math.max(maxC,r.col)}}
+  let csv='';
+  for(let r=0;r<=maxR;r++){
+    const row=[];
+    for(let c=0;c<=maxC;c++){
+      const cell=data[colLetter(c)+(r+1)];
+      const v=cell?(cell.computed!==undefined?cell.computed:cell.value):'';
+      const s=String(v);
+      row.push(s.includes(',')?'"'+s+'"':s);
+    }
+    csv+=row.join(',')+'\n';
+  }
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=sheets[activeSheet].name.replace(/\s+/g,'_')+'.csv';a.click();
+};
+
+// ── AI ────────────────────────────────────────────────
+window.toggleAI=function(){document.getElementById('ai-panel').classList.toggle('hidden')};
+
+function getSheetSummary(){
+  const data=sheets[activeSheet]?.data||{};
+  const entries=Object.entries(data).slice(0,50);
+  if(!entries.length)return 'Hoja vacia.';
+  return entries.map(([k,c])=>k+': '+(c.formula||c.computed||c.value)).join('\n');
+}
+
+window.aiAction=async function(action){
+  if(aiGenerating)return;
+  const output=document.getElementById('ai-output');
+  const summary=getSheetSummary();
+  const prompts={
+    formula:{system:'Eres un experto en hojas de calculo. Sugiere formulas. Responde solo la formula, ej: =SUM(A1:A10)',prompt:`Datos actuales:\n${summary}\n\nCelda seleccionada: ${selectedCell||'A1'}\nSugiere una formula util para esta celda.`},
+    analyze:{system:'Analiza datos de hojas de calculo. Se conciso.',prompt:`Analiza estos datos y describe patrones o insights:\n${summary}`},
+    summarize:{system:'Resume datos de hojas de calculo.',prompt:`Resume los datos de esta hoja:\n${summary}`},
+    fill:{system:'Eres un experto en datos. Sugiere valores para auto-completar.',prompt:`Datos actuales:\n${summary}\n\nCelda seleccionada: ${selectedCell||'A1'}\nSugiere valores para completar la columna basandote en el patron.`}
+  };
+  const cfg=prompts[action];
+  await generateStream(cfg.prompt,output,{system:cfg.system});
+};
+
+window.aiAsk=async function(){
+  if(aiGenerating)return;
+  const input=document.getElementById('ai-question');
+  const q=input.value.trim();if(!q)return;input.value='';
+  const output=document.getElementById('ai-output');
+  const summary=getSheetSummary();
+  await generateStream(`Datos de la hoja:\n${summary}\n\nPregunta: ${q}`,output,{system:'Responde preguntas sobre datos de hojas de calculo. Se preciso y conciso.'});
+};
+
+// ── Stats ─────────────────────────────────────────────
+function updateStats(){
+  const data=sheets[activeSheet]?.data||{};
+  const cells=Object.keys(data).length;
+  const formulas=Object.values(data).filter(c=>c.formula).length;
+  document.getElementById('hdr-stats').textContent=`${cells} celdas | ${formulas} formulas | ${sheets.length} hoja${sheets.length>1?'s':''}`;
+}
+
+init();
+</script>
+</body>
+</html>
