@@ -1,4 +1,4 @@
-const CACHE_NAME = 'spreadsheet-cache-v2';
+const CACHE_NAME = 'spreadsheet-cache-v3';
 const APP_FILES = ['/', '/index.html', '/js-vector-store.js', '/js-doc-store.js', '/manifest.json', '/icon.svg'];
 const CACHE_DOMAINS = ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co', 'cdn.jsdelivr.net'];
 

@@ -129,7 +129,7 @@ table.grid{border-collapse:collapse;min-width:100%}
 
 <div class="app">
   <div class="grid-container" id="grid-container">
-    <table class="grid" id="grid"></table>
+    <table class="grid" id="grid" ondrop="dropCSV(event)" ondragover="event.preventDefault();this.style.opacity='0.7'" ondragleave="this.style.opacity='1'"></table>
   </div>
 
   <div class="ai-panel hidden" id="ai-panel">
@@ -170,7 +170,7 @@ let embedder = null, generator = null;
 let db, sheetsCol, vecStore, bm25, hybrid;
 const COLS = 26, VISIBLE_ROWS = 50, DIM = 384;
 let sheets = []; // [{ name, data: {[cellKey]: {value,formula}} }]
-let activeSheet = 0, selectedCell = null, selectedRange = null;
+let activeSheet = 0, selectedCell = null;
 let aiGenerating = false;
 
 // ── IDBAdapter ────────────────────────────────────────
@@ -259,6 +259,16 @@ function getValues(arg){
   const p=parseFullRef(arg);
   const v=getCellValueFromSheet(p.sheetIdx,p.cellKey);
   return typeof v==='number'?[v]:[];
+}
+
+/** Safe expression evaluator — only allows numbers, strings, operators, parens */
+function safeEval(expr){
+  const s=String(expr).trim();
+  // Allow: numbers, strings, +, -, *, /, %, >, <, =, !, &, |, (, ), ., space, quotes
+  if(/[^0-9a-zA-Z_.+\-*/%><=!&|() "',\s]/.test(s))return '#ERR';
+  // Block dangerous patterns
+  if(/\b(function|return|var|let|const|class|import|export|require|eval|window|document|fetch|alert|confirm|prompt)\b/i.test(s))return '#ERR';
+  try{return Function('"use strict";return('+s+')')()}catch{return '#ERR'}
 }
 
 function evalFormula(formula,sheetIdx){
@@ -355,7 +365,10 @@ function evalFormula(formula,sheetIdx){
     f=f.replace(/IF\(([^,]+),([^,]+),([^)]+)\)/gi,(_,cond,t,fl)=>{
       try{
         const resolved=cond.replace(/(?:[\w\s]+!)?[A-Z]+\d+/g,m=>JSON.stringify(getCellValue(m,evalSheet)));
-        return Function('"use strict";return('+resolved+')')()? eval(t.trim()):eval(fl.trim());
+        const condResult=safeEval(resolved);
+        const tVal=t.trim(),fVal=fl.trim();
+        const result=condResult?safeEval(tVal):safeEval(fVal);
+        return result;
       }catch{return '#ERR'}
     });
     f=f.replace(/CONCAT\(([^)]+)\)/gi,(_,args)=>args.split(',').map(a=>{a=a.trim();if(/^(?:[\w\s]+!)?[A-Z]+\d+$/.test(a))return String(getCellValue(a,evalSheet));return a.replace(/^["']|["']$/g,'')}).join(''));
@@ -364,7 +377,7 @@ function evalFormula(formula,sheetIdx){
     f=f.replace(/([\w\s]+![A-Z]+\d+)/g,m=>{const v=getCellValue(m,evalSheet);return typeof v==='number'?v:JSON.stringify(v)});
     f=f.replace(/([A-Z]+\d+)/g,m=>{const v=getCellValueFromSheet(evalSheet,m);return typeof v==='number'?v:JSON.stringify(v)});
 
-    return Function('"use strict";return('+f+')')();
+    return safeEval(f);
   }catch(e){return '#ERR'}
 }
 
@@ -526,17 +539,34 @@ window.finishEdit=function(key,val){
   if(val===''){
     delete sheets[activeSheet].data[key];
   }else if(val.startsWith('=')){
-    sheets[activeSheet].data[key]={value:val,formula:val,computed:evalFormula(val)};
+    sheets[activeSheet].data[key]={value:val,formula:val,computed:evalFormula(val,activeSheet)};
   }else{
     const num=parseFloat(val);
     sheets[activeSheet].data[key]={value:isNaN(num)?val:num};
   }
   recalcAll();
-  renderGrid();
+  // Update only changed cells instead of full re-render
+  updateCellDisplay(key);
+  // Also update cells that might depend on this one
+  const data=sheets[activeSheet]?.data||{};
+  for(const[k,c]of Object.entries(data)){
+    if(c.formula&&k!==key)updateCellDisplay(k);
+  }
   selectCell(key);
   updateStats();
   persistAll();
 };
+
+function updateCellDisplay(key){
+  const td=document.querySelector(`[data-key="${key}"]`);
+  if(!td)return;
+  const cell=sheets[activeSheet]?.data[key];
+  const val=cell?(cell.computed!==undefined?cell.computed:cell.value):'';
+  const isNum=typeof val==='number'||(!isNaN(parseFloat(val))&&val!=='');
+  const isFormula=cell?.formula;
+  const isErr=val==='#ERR'||val==='#N/A'||val==='#REF';
+  td.innerHTML=`<div class="cell-display${isNum?' num':''}${isFormula?' formula':''}${isErr?' err':''}">${esc(String(val??''))}</div>`;
+}
 
 window.commitFormula=function(){
   if(!selectedCell)return;
@@ -567,7 +597,7 @@ document.addEventListener('keydown',e=>{
 // ── Sheet Tabs ────────────────────────────────────────
 function renderSheetTabs(){
   document.getElementById('sheet-tabs').innerHTML=sheets.map((s,i)=>
-    `<button class="sheet-tab ${i===activeSheet?'active':''}" onclick="switchSheet(${i})" ondblclick="renameSheet(${i})">${esc(s.name)}</button>`
+    `<button class="sheet-tab ${i===activeSheet?'active':''}" onclick="switchSheet(${i})" ondblclick="renameSheet(${i})" oncontextmenu="event.preventDefault();deleteSheet(${i})">${esc(s.name)}</button>`
   ).join('');
 }
 
@@ -597,23 +627,67 @@ window.renameSheet=function(i){
   persistAll();
 };
 
+window.deleteSheet=function(i){
+  if(sheets.length<=1){alert('No puedes eliminar la unica hoja');return}
+  if(!confirm('Eliminar "'+sheets[i].name+'"?'))return;
+  if(sheets[i]._id)sheetsCol.removeById(sheets[i]._id);
+  sheets.splice(i,1);
+  if(activeSheet>=sheets.length)activeSheet=sheets.length-1;
+  renderGrid();renderSheetTabs();updateStats();persistAll();
+};
+
 // ── Search ────────────────────────────────────────────
 window.toggleSearch=function(){document.getElementById('search-bar').classList.toggle('visible')};
 
 window.onSearch=function(){
   const q=document.getElementById('search-input').value.trim().toLowerCase();
   if(!q){document.getElementById('search-results').textContent='';document.querySelectorAll('.grid td.in-range').forEach(e=>e.classList.remove('in-range'));return}
-  const data=sheets[activeSheet]?.data||{};
-  const matches=[];
-  for(const[key,cell]of Object.entries(data)){
-    const val=String(cell.computed!==undefined?cell.computed:cell.value).toLowerCase();
-    if(val.includes(q))matches.push(key);
+
+  // Search ALL sheets
+  let totalMatches=0;const localMatches=[];
+  for(let si=0;si<sheets.length;si++){
+    const data=sheets[si]?.data||{};
+    for(const[key,cell]of Object.entries(data)){
+      const val=String(cell.computed!==undefined?cell.computed:cell.value).toLowerCase();
+      if(val.includes(q)){totalMatches++;if(si===activeSheet)localMatches.push(key)}
+    }
   }
+
   document.querySelectorAll('.grid td.in-range').forEach(e=>e.classList.remove('in-range'));
-  matches.forEach(k=>{const td=document.querySelector(`[data-key="${k}"]`);if(td)td.classList.add('in-range')});
-  document.getElementById('search-results').textContent=matches.length+' encontrada'+(matches.length!==1?'s':'');
-  if(matches.length>0)selectCell(matches[0]);
+  localMatches.forEach(k=>{const td=document.querySelector(`[data-key="${k}"]`);if(td)td.classList.add('in-range')});
+  const extra=totalMatches-localMatches.length;
+  let txt=localMatches.length+' aqui';
+  if(extra>0)txt+=', '+extra+' en otras hojas';
+  document.getElementById('search-results').textContent=txt;
+  if(localMatches.length>0)selectCell(localMatches[0]);
 };
+
+// ── CSV Parser (handles quoted fields, commas in values, newlines) ─────
+function parseCSVText(text){
+  const rows=[]; let row=[]; let field=''; let inQuote=false;
+  const sep=text.indexOf('\t')>=0&&text.indexOf('\t')<text.indexOf('\n')?'\t':',';
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(inQuote){
+      if(c==='"'&&text[i+1]==='"'){field+='"';i++}
+      else if(c==='"')inQuote=false;
+      else field+=c;
+    }else{
+      if(c==='"')inQuote=true;
+      else if(c===sep){row.push(field.trim());field=''}
+      else if(c==='\n'||c==='\r'){if(c==='\r'&&text[i+1]==='\n')i++;row.push(field.trim());if(row.some(c=>c!==''))rows.push(row);row=[];field=''}
+      else field+=c;
+    }
+  }
+  row.push(field.trim());if(row.some(c=>c!==''))rows.push(row);
+  return rows;
+}
+
+function escapeCSVField(val){
+  const s=String(val);
+  if(s.includes(',')||s.includes('"')||s.includes('\n'))return '"'+s.replace(/"/g,'""')+'"';
+  return s;
+}
 
 // ── Import/Export CSV ─────────────────────────────────
 window.importCSV=function(){document.getElementById('csv-file').click()};
@@ -628,8 +702,7 @@ window.handleCSVImport=function(event){
     if(file.name.endsWith('.json')){
       try{const j=JSON.parse(text);if(Array.isArray(j)){rows=j.map(r=>Object.values(r).map(String))}else return}catch{return}
     }else{
-      const sep=text.includes('\t')?'\t':',';
-      rows=text.split('\n').map(r=>r.split(sep).map(c=>c.replace(/^"|"$/g,'').trim()));
+      rows=parseCSVText(text);
     }
     const data={};
     rows.forEach((row,ri)=>{
@@ -644,6 +717,17 @@ window.handleCSVImport=function(event){
   event.target.value='';
 };
 
+window.dropCSV=function(event){
+  event.preventDefault();
+  event.currentTarget.style.opacity='1';
+  const file=Array.from(event.dataTransfer.files).find(f=>f.name.match(/\.(csv|tsv|json)$/i));
+  if(!file){alert('Solo CSV, TSV, o JSON');return}
+  // Reuse handleCSVImport logic
+  const fakeEvent={target:{files:[file],value:''},preventDefault:()=>{}};
+  fakeEvent.target.value='';
+  handleCSVImport(fakeEvent);
+};
+
 window.exportCSV=function(){
   const data=sheets[activeSheet]?.data||{};
   let maxR=0,maxC=0;
@@ -654,8 +738,7 @@ window.exportCSV=function(){
     for(let c=0;c<=maxC;c++){
       const cell=data[colLetter(c)+(r+1)];
       const v=cell?(cell.computed!==undefined?cell.computed:cell.value):'';
-      const s=String(v);
-      row.push(s.includes(',')?'"'+s+'"':s);
+      row.push(escapeCSVField(v));
     }
     csv+=row.join(',')+'\n';
   }
